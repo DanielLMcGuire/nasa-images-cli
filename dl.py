@@ -186,21 +186,36 @@ def cmd_download(args):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Download images from the NASA Image and Video Library.',
+        description='bulk-download highres images from the NASA Image Library',
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=__doc__,
+        epilog="Example:\n  python dl.py search 'Artemis II'\n  python dl.py download 'Artemis_II'"
     )
-    sub = parser.add_subparsers(dest='command', required=True)
+    
+    sub = parser.add_subparsers(dest='command', required=True, help='Available sub-commands')
 
-    p = sub.add_parser('search', help='Find album names by keyword.')
-    p.add_argument('query', help='Search keyword(s), e.g. "artemis" or "apollo 11"')
-    p.add_argument('--pages', type=int, default=5,
-                   help='Search result pages to scan (default 5 x 100 results)')
+    p = sub.add_parser('search', help='Search for NASA albums by keywords.')
+    p.add_argument(
+        'query', 
+        help='The keyword or mission name to search for (e.g., "Artemis" or "Apollo").'
+    )
+    p.add_argument(
+        '--pages', 
+        type=int, 
+        default=5,
+        help='The number of result pages to scan. Each page contains 100 results. Increase this if you cannot find your album. (Default: 5)'
+    )
     p.set_defaults(func=cmd_search)
 
-    p = sub.add_parser('download', help='Download all images in a named album.')
-    p.add_argument('album', help='Album name (case-sensitive), e.g. Artemis_II')
-    p.add_argument('-o', '--output', default=None, help='Output directory')
+    p = sub.add_parser('download', help='Download all original-resolution images from a specific album.')
+    p.add_argument(
+        'album', 
+        help='case-sensitive name of NASA album (e.g., "Artemis_II"). Use the search cmd to find these.'
+    )
+    p.add_argument(
+        '-o', '--output', 
+        default=None, 
+        help='directory path where images will be saved. If not present, a folder named after the albums ID will be created.'
+    )
     p.set_defaults(func=cmd_download)
 
     args = parser.parse_args()
