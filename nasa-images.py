@@ -109,7 +109,7 @@ def cmd_search(args):
     print()
     print('Download with:')
     best_album = max(albums.keys(), key=lambda name: _similarity(effective_query, name.replace('_', ' ')))
-    print(f'  python dl.py download "{best_album}"')
+    print(f'  python nasa-images.py download "{best_album}"')
 
 
 def download_items(items, out_dir):
@@ -188,7 +188,7 @@ def main():
     parser = argparse.ArgumentParser(
         description='bulk-download highres images from the NASA Image Library',
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="Example:\n  python dl.py search 'Artemis II'\n  python dl.py download 'Artemis_II'"
+        epilog="Example:\n  python nasa-images.py search 'Artemis II'\n  python nasa-images.py download 'Artemis_II'"
     )
     
     sub = parser.add_subparsers(dest='command', required=True, help='Available sub-commands')
