@@ -268,6 +268,8 @@ def download_items(items, out_dir):
                         if l.get('rel') == 'preview' and '/image/' in l.get('href', '')]
         
         if not preview_links:
+            nasa_id = item.get('data', [{}])[0].get('nasa_id', 'unknown')
+            print(f"  {Color.YELLOW}Skipped{Color.END} {nasa_id} (no link)")
             missing += 1
             continue
 
