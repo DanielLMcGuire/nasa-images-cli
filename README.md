@@ -1,4 +1,5 @@
 # nasa-images-cli
+![pypi version](https://img.shields.io/pypi/v/nasa-images-cli)
 
 ```bash
 $ pip install nasa-images-cli
