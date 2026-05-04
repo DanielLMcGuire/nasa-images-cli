@@ -7,6 +7,6 @@ Options:
 - search `QUERY`
 
     Show the above UI
-- download `ALBUM_ID` (-o `OUTFILE`)
+- download `ALBUM_ID` (-o `OUTFOLDER`)
   
     Download album by ID
