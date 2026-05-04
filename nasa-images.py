@@ -12,6 +12,7 @@ import itertools
 import threading
 import time
 import socket
+import random
 
 API_ROOT = 'https://images-api.nasa.gov'
 ASSET_BASE = 'https://images-assets.nasa.gov'
@@ -23,6 +24,8 @@ NASA_WORM_LOGO = r""" ___     _      __     ______      __
 | |  \ \| | / /    \ \_____)  |/ /    \ \
 |_|   \___//_/      \________//_/      \_\ Images Library
 """
+MAX_RETRIES = 3
+RETRY_BASE  = 1.5 # seconds
 
 class WinProgress:
     HIDDEN        = 0
@@ -257,6 +260,26 @@ def cmd_search(args):
         download_args = argparse.Namespace(album=selected_album, output=None)
         cmd_download(download_args)
 
+def _download_url(url: str, dest: str) -> bool:
+    tmp = dest + '.tmp'
+    for attempt in range(MAX_RETRIES):
+        try:
+            req = urllib.request.Request(url, headers={'User-Agent': 'NASA-CLI-Archive-Tool/1.0'})
+            with urllib.request.urlopen(req, timeout=30) as resp, open(tmp, 'wb') as f:
+                while chunk := resp.read(65536):
+                    f.write(chunk)
+            os.replace(tmp, dest)
+            return True
+        except urllib.error.HTTPError:
+            if os.path.exists(tmp): os.remove(tmp)
+            return False
+        except (urllib.error.URLError, socket.timeout, OSError):
+            if attempt < MAX_RETRIES - 1:
+                wait = RETRY_BASE * (2 ** attempt) + random.uniform(0, 0.5)
+                time.sleep(wait)
+    if os.path.exists(tmp): os.remove(tmp)
+    return False
+
 def download_items(items, out_dir):
     dl = sk = fail = missing = 0
     total = len(items)
@@ -290,30 +313,15 @@ def download_items(items, out_dir):
             continue
 
         downloaded = False
-        tmp_fname = fname + '.tmp'
+
         for suffix in SIZE_ORDER:
             parsed = urllib.parse.urlparse(href.replace('~thumb', suffix))
             url = ASSET_BASE + urllib.parse.quote(parsed.path)
-
-            try:
-                req = urllib.request.Request(url, headers={'User-Agent': 'NASA-CLI-Archive-Tool/1.0'})
-                with urllib.request.urlopen(req, timeout=30) as resp, open(tmp_fname, 'wb') as f:
-                    while chunk := resp.read(65536):
-                        f.write(chunk)
-                os.replace(tmp_fname, fname)
+            if _download_url(url, fname):
                 downloaded = True
                 dl += 1
                 collected_urls.append(url)
                 break
-            except urllib.error.HTTPError:
-                continue
-            except (urllib.error.URLError, socket.timeout, PermissionError, OSError) as e:
-                WinProgress.error()
-                print(f"\n{Color.RED}IO Error on {base_name}:{Color.END} {str(e)}")
-                break
-            finally:
-                if os.path.exists(tmp_fname):
-                    os.remove(tmp_fname)
 
         if not downloaded:
             fail += 1
