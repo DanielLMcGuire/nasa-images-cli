@@ -312,34 +312,34 @@ def cmd_download(args):
     
     print(f"\n{Color.GREEN}↓ Initializing download for:{Color.END} {Color.BOLD}{args.album}{Color.END}")
     
+    encoded = urllib.parse.quote(args.album, safe='')
+    base_url = f'{API_ROOT}/album/{encoded}'
+
     with Spinner("Fetching album metadata..."):
-        encoded = urllib.parse.quote(args.album, safe='')
-        base_url = f'{API_ROOT}/album/{encoded}'
         first = get_json(f'{base_url}?page_size=100&page=1')
 
     if not first or not first['collection'].get('metadata', {}).get('total_hits'):
         print(f"{Color.RED}Album empty or not found.{Color.END}")
         return
 
-    coll = first['collection']
-    total_hits = coll.get('metadata', {}).get('total_hits', 0)
-    
-    tdl = tsk = tfail = tmissing = 0
-    current_coll = coll
+    all_items = []
+    current_coll = first['collection']
     page = 1
 
-    while True:
-        dl, sk, fail, miss = download_items(current_coll.get('items', []), out_dir)
-        tdl, tsk, tfail, tmissing = tdl+dl, tsk+sk, tfail+fail, tmissing+miss
-        
-        if not any(l.get('rel') == 'next' for l in current_coll.get('links', [])):
-            break
-        
-        page += 1
-        current_coll = get_json(f'{base_url}?page_size=100&page={page}')['collection']
+    with Spinner("Fetching all pages..."):
+        while True:
+            all_items.extend(current_coll.get('items', []))
+            if not any(l.get('rel') == 'next' for l in current_coll.get('links', [])):
+                break
+            page += 1
+            current_coll = get_json(f'{base_url}?page_size=100&page={page}')['collection']
+
+    print(f"  {Color.CYAN}Total items:{Color.END} {len(all_items)}")
+
+    dl, sk, fail, missing = download_items(all_items, out_dir)
 
     print(f"\n{Color.BOLD}Summary:{Color.END}")
-    print(f"  {Color.GREEN}New:{Color.END} {tdl} | {Color.CYAN}Exists:{Color.END} {tsk} | {Color.RED}Fail:{Color.END} {tfail}\n")
+    print(f"  {Color.GREEN}New:{Color.END} {dl} | {Color.CYAN}Exists:{Color.END} {sk} | {Color.RED}Fail:{Color.END} {fail}\n")
 
 def main():
     parser = argparse.ArgumentParser(description='bulk-download images from NASA Image Library')
