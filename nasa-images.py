@@ -73,11 +73,13 @@ class Spinner:
         self.delay = 0.1
         self.message = message
         self.thread = None
+        self._lock = threading.Lock()
 
     def _spin(self):
         while self.busy:
-            sys.stdout.write(f'\r{Color.CYAN}{next(self.spinner)}{Color.END} {self.message}')
-            sys.stdout.flush()
+            with self._lock:
+                sys.stdout.write(f'\r{Color.CYAN}{next(self.spinner)}{Color.END} {self.message}')
+                sys.stdout.flush()
             time.sleep(self.delay)
 
     def __enter__(self):
