@@ -2,7 +2,7 @@
 
 ![UI](./assets/out.gif?f=null)
 
-> **`Missing:`** indicates images which have no URL listed in the metadata.
+> **`Missing:`** indicates images which have no URL listed in the metadata. (or videos)
 
 Options:
 
