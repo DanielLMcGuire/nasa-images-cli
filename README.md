@@ -1,6 +1,6 @@
 # nasa-images-cli
 
-![UI](assets/out.gif)
+![UI](./assets/out.gif?f=null)
 
 Options:
 
