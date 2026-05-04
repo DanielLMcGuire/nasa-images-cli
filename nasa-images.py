@@ -303,7 +303,14 @@ def download_items(items, out_dir):
 
         pct = int((i / total) * 100)
         WinProgress.set(pct)
-        sys.stdout.write(f"\r{Color.YELLOW}[{pct}%]{Color.END} Processing: {base_name[:35]}...\033[K")
+        processed = dl + fail + missing
+
+        progress_text = (
+            f"{Color.YELLOW}[{pct}% {processed}/{total - sk}]{Color.END} "
+            f"Processing: {base_name[:35]}...\033[K"
+        )
+
+        sys.stdout.write("\r" + progress_text)
         sys.stdout.flush()
 
         if os.path.exists(fname):
