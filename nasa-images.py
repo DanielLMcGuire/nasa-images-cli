@@ -8,17 +8,87 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+import itertools
+import threading
+import time
+import socket
 
 API_ROOT   = 'https://images-api.nasa.gov'
 ASSET_BASE = 'https://images-assets.nasa.gov'
 SIZE_ORDER = ['~orig', '~large', '~medium', '~small', '~thumb']
 
-_ROMAN_MAP = [
-    (1000, 'M'), (900, 'CM'), (500, 'D'), (400, 'CD'),
-    (100,  'C'), (90,  'XC'), (50,  'L'), (40,  'XL'),
-    (10,   'X'), (9,   'IX'), (5,   'V'), (4,   'IV'), (1, 'I'),
-]
+class WinProgress:
+    HIDDEN        = 0
+    NORMAL        = 1
+    ERROR         = 2
+    INDETERMINATE = 3
+    WARNING       = 4
 
+    _enabled = 'WT_SESSION' in os.environ
+
+    @staticmethod
+    def _write(mode, value=0):
+        if not WinProgress._enabled:
+            return
+        sys.stdout.write(f'\x1b]9;4;{mode};{value}\x07')
+        sys.stdout.flush()
+
+    @staticmethod
+    def start():
+        WinProgress._write(WinProgress.INDETERMINATE)
+
+    @staticmethod
+    def set(pct: int):
+        WinProgress._write(WinProgress.NORMAL, max(0, min(100, pct)))
+
+    @staticmethod
+    def error():
+        WinProgress._write(WinProgress.ERROR, 100)
+
+    @staticmethod
+    def done():
+        WinProgress._write(WinProgress.HIDDEN)
+
+class Color:
+    PURPLE = '\033[95m'
+    CYAN   = '\033[96m'
+    BLUE   = '\033[94m'
+    GREEN  = '\033[92m'
+    YELLOW = '\033[93m'
+    RED    = '\033[91m'
+    BOLD   = '\033[1m'
+    END    = '\033[0m'
+
+class Spinner:
+    def __init__(self, message="Loading..."):
+        self.spinner = itertools.cycle(['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'])
+        self.busy = False
+        self.delay = 0.1
+        self.message = message
+        self.thread = None
+
+    def _spin(self):
+        while self.busy:
+            sys.stdout.write(f'\r{Color.CYAN}{next(self.spinner)}{Color.END} {self.message}')
+            sys.stdout.flush()
+            time.sleep(self.delay)
+            sys.stdout.write('\r' + ' ' * (len(self.message) + 2) + '\r')
+
+    def __enter__(self):
+        self.busy = True
+        WinProgress.start()
+        self.thread = threading.Thread(target=self._spin, daemon=True)
+        self.thread.start()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.busy = False
+        WinProgress.done()
+        time.sleep(self.delay)
+        sys.stdout.write('\r' + ' ' * (len(self.message) + 2) + '\r')
+        sys.stdout.flush()
+
+_ROMAN_MAP = [(1000, 'M'), (900, 'CM'), (500, 'D'), (400, 'CD'), (100, 'C'), (90, 'XC'), (50, 'L'), (40, 'XL'), (10, 'X'), (9, 'IX'), (5, 'V'), (4, 'IV'), (1, 'I')]
 def to_roman(n: int) -> str:
     result = ''
     for value, numeral in _ROMAN_MAP:
@@ -61,49 +131,59 @@ def _normalize_search_text(text: str) -> str:
     return re.sub(r'\s+', ' ', text).strip()
 
 def _similarity(query: str, title: str) -> float:
-    q = _normalize_search_text(query)
-    t = _normalize_search_text(title)
-
-    if not q or not t:
-        return 0.0
-
-    q_tokens = set(q.split())
-    t_tokens = set(t.split())
-
+    q, t = _normalize_search_text(query), _normalize_search_text(title)
+    if not q or not t: return 0.0
+    q_tokens, t_tokens = set(q.split()), set(t.split())
     token_score = len(q_tokens & t_tokens) / max(len(q_tokens), 1)
     seq_score = difflib.SequenceMatcher(None, q, t).ratio()
     prefix_bonus = 1.0 if t.startswith(q) else 0.0
-
     return (0.55 * token_score) + (0.35 * seq_score) + (0.10 * prefix_bonus)
 
 def get_json(url):
     try:
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=30) as r:
-            return json.loads(r.read())
+        req = urllib.request.Request(url, headers={'User-Agent': 'NASA-CLI-Archive-Tool/1.0'})
+        with urllib.request.urlopen(req, timeout=15) as response:
+            return json.loads(response.read().decode('utf-8'))
+
     except urllib.error.HTTPError as e:
         if e.code == 404:
             return None
-        raise SystemExit(f'HTTP {e.code} — {url}')
+        elif e.code == 429:
+            print(f"\n{Color.RED}Rate limit exceeded.{Color.END}")
+            sys.exit(1)
+        elif 500 <= e.code < 600:
+            print(f"\n{Color.RED}NASA Server Error ({e.code}).{Color.END}")
+            sys.exit(1)
+        else:
+            print(f"\n{Color.RED}HTTP Error {e.code}:{Color.END} {e.reason}")
+            sys.exit(1)
+
     except urllib.error.URLError as e:
-        raise SystemExit(f'Network error — {url} — {e.reason}')
-    except json.JSONDecodeError:
-        raise SystemExit(f'Invalid JSON response — {url}')
+        if isinstance(e.reason, socket.timeout):
+            print(f"\n{Color.RED}Network Timeout.{Color.END}")
+        else:
+            print(f"\n{Color.RED}Connection Refused.{Color.END}")
+        sys.exit(1)
+
+    except json.JSONDecodeError as e:
+        print(f"\n{Color.RED}Data Corruption.{Color.END} invalid JSON from API")
+        print(f"Details: {str(e)}")
+        sys.exit(1)
+
+    except Exception as e:
+        print(f"\n{Color.RED}Unexpected Failure.{Color.END} Type: {type(e).__name__}")
+        print(f"Message: {str(e)}")
+        sys.exit(1)
 
 def _run_search(query: str, pages: int) -> dict:
     albums = {}
     for page in range(1, pages + 1):
-        params = urllib.parse.urlencode({
-            'q': query, 'media_type': 'image',
-            'page_size': 100, 'page': page,
-        })
+        params = urllib.parse.urlencode({'q': query, 'media_type': 'image', 'page_size': 100, 'page': page})
         data = get_json(f'{API_ROOT}/search?{params}')
         if not data: break
-        
-        coll  = data['collection']
+        coll = data['collection']
         items = coll.get('items', [])
         if not items: break
-
         for item in items:
             for block in item.get('data', []):
                 for name in (block.get('album') or []):
@@ -111,7 +191,6 @@ def _run_search(query: str, pages: int) -> dict:
                     title = block.get('title', '')
                     if title and len(albums[name]) < 10:
                         albums[name].add(title)
-
         if not any(l.get('rel') == 'next' for l in coll.get('links', [])):
             break
     return albums
@@ -119,164 +198,148 @@ def _run_search(query: str, pages: int) -> dict:
 def cmd_search(args):
     def get_variants(q):
         variants = [q]
-        if ' ' in q:
-            variants.append(q.replace(' ', '_'))
-        if '_' in q:
-            variants.append(q.replace('_', ' '))
+        if ' ' in q: variants.append(q.replace(' ', '_'))
+        if '_' in q: variants.append(q.replace('_', ' '))
         return list(dict.fromkeys(variants))
-
-    def get_numeral_variants(q):
-        variants = []
-        r = arabic_to_roman(q)
-        if r != q:
-            variants.append(r)
-        a = roman_to_arabic(q)
-        if a != q:
-            variants.append(a)
-        return variants
 
     merged_albums = {}
     attempted = set()
 
     def merge_results(queries):
         for q in queries:
-            if q in attempted:
-                continue
+            if q in attempted: continue
             attempted.add(q)
-
             res = _run_search(q, args.pages)
             for album_name, titles in res.items():
                 merged_albums.setdefault(album_name, set()).update(titles)
 
-    primary_queries = get_variants(args.query)
-    merge_results(primary_queries)
+    with Spinner(f"Searching {API_ROOT} for '{args.query}'..."):
+        primary_queries = get_variants(args.query)
+        merge_results(primary_queries)
+
+        if not merged_albums:
+            secondary = []
+            for q in primary_queries:
+                r, a = arabic_to_roman(q), roman_to_arabic(q)
+                if r != q: secondary.append(r)
+                if a != q: secondary.append(a)
+            merge_results(list(dict.fromkeys(secondary)))
 
     if not merged_albums:
-        secondary_queries = []
-        for q in primary_queries:
-            secondary_queries.extend(get_numeral_variants(q))
-
-        secondary_queries = list(dict.fromkeys(secondary_queries))
-        if secondary_queries:
-            print(f'No results for "{args.query}" — trying numeral variations...')
-            merge_results(secondary_queries)
-
-    if not merged_albums:
-        print(f'No albums found for "{args.query}" or its variations.')
+        print(f"{Color.RED}No albums found for '{args.query}'.{Color.END}")
         return
 
-    ranked_names = sorted(
-        merged_albums.keys(),
-        key=lambda n: _similarity(args.query, n.replace('_', ' ')),
-        reverse=True
-    )
-
+    ranked_names = sorted(merged_albums.keys(), key=lambda n: _similarity(args.query, n.replace('_', ' ')), reverse=True)
     display_names = ranked_names[:args.limit]
 
-    print(f'Found {len(merged_albums)} album(s). Showing top {len(display_names)} matches for "{args.query}":\n')
-    for name in display_names:
-        print(f'  {name}')
-        best_titles = sorted(
-            list(merged_albums[name]),
-            key=lambda t: _similarity(args.query, t),
-            reverse=True
-        )[:2]
+    print(f"{Color.BOLD}Found {len(merged_albums)} albums. Matches for '{args.query}':{Color.END}\n")
+    for i, name in enumerate(display_names, 1):
+        print(f" {Color.YELLOW}[{i}]{Color.END} {Color.BOLD}{name}{Color.END}")
+        best_titles = sorted(list(merged_albums[name]), key=lambda t: _similarity(args.query, t), reverse=True)[:1]
         for t in best_titles:
-            print(f'      e.g. "{t}"')
+            print(f"     {Color.CYAN}→{Color.END} e.g. \"{t}\"")
 
-    best_match = ranked_names[0]
-    print(f'\nDownload with:\n  python {sys.argv[0]} download "{best_match}"')
+    print(f"\n{Color.PURPLE}Selection:{Color.END}")
+    choice = input("Enter number to download (or Enter to quit): ").strip()
+    
+    if choice.isdigit() and 1 <= int(choice) <= len(display_names):
+        selected_album = display_names[int(choice)-1]
+        download_args = argparse.Namespace(album=selected_album, output=None)
+        cmd_download(download_args)
 
 def download_items(items, out_dir):
     dl = sk = fail = missing = 0
+    total = len(items)
+    
+    WinProgress.start()
 
-    for item in items:
-        preview_links = [
-            link for link in item.get('links', [])
-            if link.get('rel') == 'preview' and '/image/' in link.get('href', '')
-        ]
-
+    for i, item in enumerate(items, 1):
+        preview_links = [l for l in item.get('links', []) 
+                        if l.get('rel') == 'preview' and '/image/' in l.get('href', '')]
+        
         if not preview_links:
             missing += 1
             continue
 
         href = preview_links[0]['href']
-        fname = os.path.join(
-            out_dir,
-            os.path.basename(href).replace('~thumb', '~orig').replace(' ', '_')
-        )
+        base_name = os.path.basename(href).replace('~thumb', '~orig').replace(' ', '_')
+        fname = os.path.join(out_dir, base_name)
+
+        pct = int((i / total) * 100)
+        WinProgress.set(pct)
+        sys.stdout.write(f"\r{Color.YELLOW}[{pct}%]{Color.END} Processing: {base_name[:35]}...\033[K")
+        sys.stdout.flush()
 
         if os.path.exists(fname):
             sk += 1
             continue
 
         downloaded = False
+        tmp_fname = fname + '.tmp'
         for suffix in SIZE_ORDER:
-            path = urllib.parse.urlparse(href.replace('~thumb', suffix)).path
-            url = ASSET_BASE + urllib.parse.quote(path)
+            parsed = urllib.parse.urlparse(href.replace('~thumb', suffix))
+            url = ASSET_BASE + urllib.parse.quote(parsed.path)
 
             try:
-                urllib.request.urlretrieve(url, fname)
-                print(f'  OK ({suffix})  {os.path.basename(fname)}')
-                dl += 1
+                req = urllib.request.Request(url, headers={'User-Agent': 'NASA-CLI-Archive-Tool/1.0'})
+                with urllib.request.urlopen(req, timeout=30) as resp, open(tmp_fname, 'wb') as f:
+                    while chunk := resp.read(65536):
+                        f.write(chunk)
+                os.replace(tmp_fname, fname)
                 downloaded = True
+                dl += 1
                 break
-            except (urllib.error.HTTPError, urllib.error.URLError, OSError):
+            except urllib.error.HTTPError:
                 continue
+            except (urllib.error.URLError, socket.timeout, PermissionError, OSError) as e:
+                WinProgress.error()
+                print(f"\n{Color.RED}IO Error on {base_name}:{Color.END} {str(e)}")
+                break
+            finally:
+                if os.path.exists(tmp_fname):
+                    os.remove(tmp_fname)
 
         if not downloaded:
-            print(f'  FAIL  {os.path.basename(fname)}', file=sys.stderr)
             fail += 1
 
+    sys.stdout.write('\r' + ' ' * 100 + '\r')
+    WinProgress.done()
     return dl, sk, fail, missing
 
 def cmd_download(args):
     out_dir = args.output or args.album.replace(' ', '_')
     os.makedirs(out_dir, exist_ok=True)
-    encoded = urllib.parse.quote(args.album, safe='')
-    base_url = f'{API_ROOT}/album/{encoded}'
+    
+    print(f"\n{Color.GREEN}↓ Initializing download for:{Color.END} {Color.BOLD}{args.album}{Color.END}")
+    
+    with Spinner("Fetching album metadata..."):
+        encoded = urllib.parse.quote(args.album, safe='')
+        base_url = f'{API_ROOT}/album/{encoded}'
+        first = get_json(f'{base_url}?page_size=100&page=1')
 
-    first = get_json(f'{base_url}?page_size=100&page=1')
-    if not first:
-        print(f'Album "{args.album}" not found.')
-        sys.exit(1)
+    if not first or not first['collection'].get('metadata', {}).get('total_hits'):
+        print(f"{Color.RED}Album empty or not found.{Color.END}")
+        return
 
     coll = first['collection']
     total_hits = coll.get('metadata', {}).get('total_hits', 0)
-    if not total_hits:
-        print(f'Album "{args.album}" is empty.')
-        sys.exit(1)
-
-    total_pages = (total_hits + 99) // 100
-    print(f'Album      : {args.album}')
-    print(f'Output dir : {out_dir}')
-    print(f'Total items: {total_hits}  ({total_pages} page(s))')
-    print()
-
+    
     tdl = tsk = tfail = tmissing = 0
-
-    dl, sk, fail, missing = download_items(coll.get('items', []), out_dir)
-    tdl += dl
-    tsk += sk
-    tfail += fail
-    tmissing += missing
-
     current_coll = coll
-    page = 2
-    while any(l.get('rel') == 'next' for l in current_coll.get('links', [])):
-        data = get_json(f'{base_url}?page_size=100&page={page}')
-        if not data:
+    page = 1
+
+    while True:
+        dl, sk, fail, miss = download_items(current_coll.get('items', []), out_dir)
+        tdl, tsk, tfail, tmissing = tdl+dl, tsk+sk, tfail+fail, tmissing+miss
+        
+        if not any(l.get('rel') == 'next' for l in current_coll.get('links', [])):
             break
-
-        current_coll = data['collection']
-        dl, sk, fail, missing = download_items(current_coll.get('items', []), out_dir)
-        tdl += dl
-        tsk += sk
-        tfail += fail
-        tmissing += missing
+        
         page += 1
+        current_coll = get_json(f'{base_url}?page_size=100&page={page}')['collection']
 
-    print(f'\ndownloaded: {tdl} skipped: {tsk} failed: {tfail} no_preview: {tmissing}')
+    print(f"\n{Color.BOLD}Summary:{Color.END}")
+    print(f"  {Color.GREEN}New:{Color.END} {tdl} | {Color.CYAN}Exists:{Color.END} {tsk} | {Color.RED}Fail:{Color.END} {tfail}\n")
 
 def main():
     parser = argparse.ArgumentParser(description='bulk-download images from NASA Image Library')
@@ -297,4 +360,9 @@ def main():
     args.func(args)
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        WinProgress.done()
+        print(f"\n{Color.RED}Exited by user.{Color.END}")
+        sys.exit(0)
