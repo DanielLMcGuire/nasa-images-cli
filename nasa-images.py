@@ -72,7 +72,6 @@ class Spinner:
             sys.stdout.write(f'\r{Color.CYAN}{next(self.spinner)}{Color.END} {self.message}')
             sys.stdout.flush()
             time.sleep(self.delay)
-            sys.stdout.write('\r' + ' ' * (len(self.message) + 2) + '\r')
 
     def __enter__(self):
         self.busy = True
@@ -84,8 +83,9 @@ class Spinner:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.busy = False
         WinProgress.done()
-        time.sleep(self.delay)
-        sys.stdout.write('\r' + ' ' * (len(self.message) + 2) + '\r')
+        if self.thread:
+            self.thread.join()
+        sys.stdout.write('\r' + ' ' * (len(self.message) + 4) + '\r')
         sys.stdout.flush()
 
 _ROMAN_MAP = [(1000, 'M'), (900, 'CM'), (500, 'D'), (400, 'CD'), (100, 'C'), (90, 'XC'), (50, 'L'), (40, 'XL'), (10, 'X'), (9, 'IX'), (5, 'V'), (4, 'IV'), (1, 'I')]
