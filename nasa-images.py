@@ -13,9 +13,16 @@ import threading
 import time
 import socket
 
-API_ROOT   = 'https://images-api.nasa.gov'
+API_ROOT = 'https://images-api.nasa.gov'
 ASSET_BASE = 'https://images-assets.nasa.gov'
 SIZE_ORDER = ['~orig', '~large', '~medium', '~small', '~thumb']
+NASA_WORM_LOGO = r""" ___     _      __     ______      __
+/   \   | |    /  \   / _____|    /  \
+| |\ \  | |   / /\ \ | (_____    / /\ \
+| | \ \ | |  / /  \ \ \____  \  / /  \ \
+| |  \ \| | / /    \ \_____)  |/ /    \ \
+|_|   \___//_/      \________//_/      \_\ Images Library
+"""
 
 class WinProgress:
     HIDDEN        = 0
@@ -196,6 +203,8 @@ def _run_search(query: str, pages: int) -> dict:
     return albums
 
 def cmd_search(args):
+    print(f"{Color.RED}{NASA_WORM_LOGO}{Color.END}")
+
     def get_variants(q):
         variants = [q]
         if ' ' in q: variants.append(q.replace(' ', '_'))
@@ -309,6 +318,8 @@ def download_items(items, out_dir):
     sys.stdout.write('\r' + ' ' * 100 + '\r')
     WinProgress.done()
 
+    print(f"  {Color.CYAN}Downloaded images:{Color.END} ({dl}/{total})")
+
     if collected_urls:
         urls_file = os.path.join(out_dir, 'images.txt')
         with open(urls_file, 'w', encoding='utf-8') as f:
@@ -350,7 +361,7 @@ def cmd_download(args):
     dl, sk, fail, missing = download_items(all_items, out_dir)
 
     print(f"\n{Color.BOLD}Summary:{Color.END}")
-    print(f"  {Color.GREEN}New:{Color.END} {dl} | {Color.CYAN}Exists:{Color.END} {sk} | {Color.RED}Fail:{Color.END} {fail}\n")
+    print(f"  {Color.GREEN}New:{Color.END} {dl} | {Color.CYAN}Existing:{Color.END} {sk} | {Color.RED}Failed:{Color.END} {fail} | {Color.YELLOW}Missing:{Color.END} {missing}\n")
 
 def main():
     parser = argparse.ArgumentParser(description='bulk-download images from NASA Image Library')
