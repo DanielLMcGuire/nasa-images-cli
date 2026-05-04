@@ -293,7 +293,7 @@ def download_items(items, out_dir):
         
         if not preview_links:
             nasa_id = item.get('data', [{}])[0].get('nasa_id', 'unknown')
-            print(f"  {Color.YELLOW}Skipped{Color.END} {nasa_id} (no link)")
+            print(f"\n  {Color.YELLOW}Skipped{Color.END} {nasa_id} (no image link)")
             missing += 1
             continue
 
