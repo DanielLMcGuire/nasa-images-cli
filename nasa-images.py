@@ -59,7 +59,11 @@ def _run_search(query: str, pages: int) -> dict:
             'q': query, 'media_type': 'image',
             'page_size': 100, 'page': page,
         })
-        data  = get_json(f'{API_ROOT}/search?{params}')
+        try:
+            data = get_json(f'{API_ROOT}/search?{params}')
+        except SystemExit:
+            break
+
         coll  = data['collection']
         items = coll.get('items', [])
         if not items:
@@ -70,7 +74,6 @@ def _run_search(query: str, pages: int) -> dict:
                 for name in (block.get('album') or []):
                     albums.setdefault(name, [])
                     title = block.get('title', '')
-
                     if title and title not in albums[name] and len(albums[name]) < 10:
                         albums[name].append(title)
 
@@ -78,7 +81,6 @@ def _run_search(query: str, pages: int) -> dict:
             break
 
     return albums
-
 
 def cmd_search(args):
     albums = _run_search(args.query, args.pages)
@@ -141,7 +143,6 @@ def download_items(items, out_dir):
                 fail += 1
     return dl, sk, fail
 
-
 def cmd_download(args):
     out_dir  = args.output or args.album.replace(' ', '_')
     os.makedirs(out_dir, exist_ok=True)
@@ -155,7 +156,6 @@ def cmd_download(args):
 
     if not total_hits:
         print(f'Album "{args.album}" not found or empty.')
-        print('Album names are case-sensitive. Use the search subcommand to find valid names.')
         sys.exit(1)
 
     total_pages = (total_hits + 99) // 100
@@ -169,17 +169,17 @@ def cmd_download(args):
     dl, sk, fail = download_items(coll.get('items', []), out_dir)
     tdl += dl; tsk += sk; tfail += fail
 
+    current_coll = coll
     page = 2
-    while True:
-        data  = get_json(f'{base_url}?page_size=100&page={page}')
-        coll  = data['collection']
-        items = coll.get('items', [])
+    while any(l.get('rel') == 'next' for l in current_coll.get('links', [])):
+        data = get_json(f'{base_url}?page_size=100&page={page}')
+        current_coll = data['collection']
+        items = current_coll.get('items', [])
         if not items:
             break
+            
         dl, sk, fail = download_items(items, out_dir)
         tdl += dl; tsk += sk; tfail += fail
-        if not any(l.get('rel') == 'next' for l in coll.get('links', [])):
-            break
         page += 1
 
     print(f'\nDone — downloaded: {tdl}  skipped: {tsk}  failed: {tfail}')
@@ -220,7 +220,6 @@ def main():
 
     args = parser.parse_args()
     args.func(args)
-
 
 if __name__ == '__main__':
     main()
