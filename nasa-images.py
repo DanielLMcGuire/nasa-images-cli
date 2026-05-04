@@ -110,10 +110,9 @@ def from_roman(s: str) -> int:
     roman_val = {'I': 1, 'V': 5, 'X': 10, 'L': 50, 'C': 100, 'D': 500, 'M': 1000}
     res = 0
     for i in range(len(s)):
-        if i + 1 < len(s) and roman_val[s[i]] < roman_val[s[i+1]]:
-            res -= roman_val[s[i]]
-        else:
-            res += roman_val[s[i]]
+        cur = roman_val.get(s[i].upper(), 0)
+        nxt = roman_val.get(s[i+1].upper(), 0) if i + 1 < len(s) else 0
+        res += -cur if cur < nxt else cur
     return res
 
 def arabic_to_roman(text: str) -> str:
@@ -124,7 +123,7 @@ def arabic_to_roman(text: str) -> str:
             sep = ' ' if pre else ''
             return pre + sep + to_roman(n)
         return m.group()
-    return re.sub(r'([a-zA-Z]?)(\d+)', replace, text)
+    return re.sub(r'(?<![.\w])(\b[a-zA-Z]?\b)?(\d+)(?!\.\d)(?!\w)', replace, text)
 
 def roman_to_arabic(text: str) -> str:
     pattern = r'\b(?=[MDCLXVI]+\b)M{0,4}(CM|CD|D?C{0,3})(XC|XL|L?X{0,3})(IX|IV|V?I{0,3})\b'
