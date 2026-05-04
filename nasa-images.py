@@ -250,6 +250,7 @@ def cmd_search(args):
 def download_items(items, out_dir):
     dl = sk = fail = missing = 0
     total = len(items)
+    collected_urls = []
     
     WinProgress.start()
 
@@ -272,6 +273,8 @@ def download_items(items, out_dir):
 
         if os.path.exists(fname):
             sk += 1
+            parsed = urllib.parse.urlparse(href.replace('~thumb', '~orig'))
+            collected_urls.append(ASSET_BASE + urllib.parse.quote(parsed.path))
             continue
 
         downloaded = False
@@ -288,6 +291,7 @@ def download_items(items, out_dir):
                 os.replace(tmp_fname, fname)
                 downloaded = True
                 dl += 1
+                collected_urls.append(url)
                 break
             except urllib.error.HTTPError:
                 continue
@@ -304,6 +308,13 @@ def download_items(items, out_dir):
 
     sys.stdout.write('\r' + ' ' * 100 + '\r')
     WinProgress.done()
+
+    if collected_urls:
+        urls_file = os.path.join(out_dir, 'images.txt')
+        with open(urls_file, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(collected_urls) + '\n')
+        print(f"  {Color.CYAN}URLs saved to:{Color.END} {urls_file}")
+
     return dl, sk, fail, missing
 
 def cmd_download(args):
