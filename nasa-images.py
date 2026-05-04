@@ -31,7 +31,7 @@ class WinProgress:
     INDETERMINATE = 3
     WARNING       = 4
 
-    _enabled = 'WT_SESSION' in os.environ
+    _enabled = 'WT_SESSION' in os.environ or os.getenv("TERM_PROGRAM") == "ghostty"
 
     @staticmethod
     def _write(mode, value=0):
