@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nasa-images-cli"
+version = "1.0.0"
+description = "Unofficial NASA Images library search/fetch CLI"
+readme = "assets/PYREADME.md"
+license = "MIT"
+requires-python = ">=3.8"
+authors = [{ name = "Daniel McGuire", email = "danielmcguire23@icloud.com" }]
+dependencies = []
+
+[tool.setuptools]
+py-modules = ["nasa_images"]
+
+[project.scripts]
+nasa-images = "nasa_images:main"
