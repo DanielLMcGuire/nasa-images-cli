@@ -126,19 +126,24 @@ def cmd_search(args):
         print(f'No albums found for "{args.query}" or its variations.')
         return
 
-    print(f'Found {len(merged_albums)} album(s) for "{args.query}":\n')
-    for name in sorted(merged_albums):
+    ranked_names = sorted(
+        merged_albums.keys(),
+        key=lambda n: _similarity(args.query, n.replace('_', ' ')),
+        reverse=True
+    )
+    
+    display_names = ranked_names[:args.limit]
+
+    print(f'Found {len(merged_albums)} album(s). Showing top {len(display_names)} matches for "{args.query}":\n')
+    for name in display_names:
+        score = _similarity(args.query, name.replace('_', ' '))
         print(f'  {name}')
-        best = sorted(
-            list(merged_albums[name]),
-            key=lambda t: _similarity(args.query, t),
-            reverse=True,
-        )[:2]
-        for t in best:
+        best_titles = sorted(list(merged_albums[name]), key=lambda t: _similarity(args.query, t), reverse=True)[:2]
+        for t in best_titles:
             print(f'      e.g. "{t}"')
 
-    best_album = max(merged_albums.keys(), key=lambda n: _similarity(args.query, n.replace('_', ' ')))
-    print(f'\nDownload with:\n  python {sys.argv[0]} download "{best_album}"')
+    best_match = ranked_names[0]
+    print(f'\nDownload with:\n  python {sys.argv[0]} download "{best_match}"')
 
 
 def download_items(items, out_dir):
@@ -148,10 +153,7 @@ def download_items(items, out_dir):
             if link.get('rel') != 'preview' or '/image/' not in link.get('href', ''):
                 continue
             href  = link['href']
-            fname = os.path.join(
-                out_dir,
-                os.path.basename(href).replace('~thumb', '~orig').replace(' ', '_'),
-            )
+            fname = os.path.join(out_dir, os.path.basename(href).replace('~thumb', '~orig').replace(' ', '_'))
             if os.path.exists(fname):
                 sk += 1
                 continue
@@ -161,10 +163,8 @@ def download_items(items, out_dir):
                 try:
                     urllib.request.urlretrieve(url, fname)
                     print(f'  OK ({suffix})  {os.path.basename(fname)}')
-                    dl += 1
-                    break
-                except Exception:
-                    continue
+                    dl += 1; break
+                except: continue
             else:
                 print(f'  FAIL  {os.path.basename(fname)}', file=sys.stderr)
                 fail += 1
@@ -172,22 +172,19 @@ def download_items(items, out_dir):
 
 
 def cmd_download(args):
-    out_dir  = args.output or args.album.replace(' ', '_')
+    out_dir = args.output or args.album.replace(' ', '_')
     os.makedirs(out_dir, exist_ok=True)
-
-    encoded  = urllib.parse.quote(args.album, safe='')
+    encoded = urllib.parse.quote(args.album, safe='')
     base_url = f'{API_ROOT}/album/{encoded}'
 
     first = get_json(f'{base_url}?page_size=100&page=1')
     if not first:
-        print(f'Album "{args.album}" not found.')
-        sys.exit(1)
+        print(f'Album "{args.album}" not found.'); sys.exit(1)
 
     coll = first['collection']
     total_hits = coll.get('metadata', {}).get('total_hits', 0)
     if not total_hits:
-        print(f'Album "{args.album}" is empty.')
-        sys.exit(1)
+        print(f'Album "{args.album}" is empty.'); sys.exit(1)
 
     total_pages = (total_hits + 99) // 100
     print(f'Album      : {args.album}')
@@ -206,13 +203,11 @@ def cmd_download(args):
         data = get_json(f'{base_url}?page_size=100&page={page}')
         if not data: break
         current_coll = data['collection']
-        items = current_coll.get('items', [])
-        if not items: break
-        dl, sk, fail = download_items(items, out_dir)
+        dl, sk, fail = download_items(current_coll.get('items', []), out_dir)
         tdl += dl; tsk += sk; tfail += fail
         page += 1
 
-    print(f'\nDone — downloaded: {tdl}  skipped: {tsk}  failed: {tfail}')
+    print(f'\ndownloaded: {tdl} skipped: {tsk} failed: {tfail}')
 
 def main():
     parser = argparse.ArgumentParser(description='bulk-download images from NASA Image Library')
@@ -220,7 +215,8 @@ def main():
 
     p = sub.add_parser('search')
     p.add_argument('query')
-    p.add_argument('--pages', type=int, default=5)
+    p.add_argument('-l', '--limit', type=int, default=10, help='Max albums to show (default: 10)')
+    p.add_argument('--pages', type=int, default=5, help='Search depth (default: 5)')
     p.set_defaults(func=cmd_search)
 
     p = sub.add_parser('download')
