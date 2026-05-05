@@ -19,12 +19,12 @@ API_ROOT = 'https://images-api.nasa.gov'
 ASSET_BASE = 'https://images-assets.nasa.gov'
 SIZE_ORDER = ['~orig', '~large', '~medium', '~small', '~thumb']
 NASA_WORM_LOGO = r""" ___     _      __     ______      __
-/   \   | |    /  \   / _____|    /  \
-| |\ \  | |   / /\ \ | (_____    / /\ \
-| | \ \ | |  / /  \ \ \____  \  / /  \ \
-| |  \ \| | / /    \ \_____)  |/ /    \ \
-|_|   \___//_/      \________//_/      \_\ Images Library
-"""
+/###\   |#|    /##\   /######|    /##\
+|#|\#\  |#|   /#/\#\ |##(____    /#/\#\
+|#| \#\ |#|  /#/  \#\ \######\  /#/  \#\
+|#|  \#\|#| /#/    \#\_____)##|/#/    \#\
+|#|   \###//#/      \########//#/      \#\ Images Library
+ ‾     ‾‾‾ ‾‾        ‾‾‾‾‾‾‾‾ ‾‾        ‾‾"""
 MAX_RETRIES = 3
 RETRY_BASE  = 1.5 # seconds
 
