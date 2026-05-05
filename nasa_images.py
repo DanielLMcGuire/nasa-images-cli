@@ -11,6 +11,7 @@ import urllib.request
 import itertools
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import socket
 import random
 
@@ -280,62 +281,69 @@ def _download_url(url: str, dest: str) -> bool:
     if os.path.exists(tmp): os.remove(tmp)
     return False
 
-def download_items(items, out_dir):
-    dl = sk = fail = missing = 0
+def _process_item(item, out_dir):
+    preview_links = [l for l in item.get('links', [])
+                     if l.get('rel') == 'preview' and '/image/' in l.get('href', '')]
+
+    if not preview_links:
+        nasa_id = item.get('data', [{}])[0].get('nasa_id', 'unknown')
+        return 'missing', None, nasa_id
+
+    href = preview_links[0]['href']
+    base_name = os.path.basename(href).replace('~thumb', '~orig').replace(' ', '_')
+    fname = os.path.join(out_dir, base_name)
+
+    if os.path.exists(fname):
+        parsed = urllib.parse.urlparse(href.replace('~thumb', '~orig'))
+        return 'sk', ASSET_BASE + urllib.parse.quote(parsed.path), base_name
+
+    for suffix in SIZE_ORDER:
+        parsed = urllib.parse.urlparse(href.replace('~thumb', suffix))
+        url = ASSET_BASE + urllib.parse.quote(parsed.path)
+        if _download_url(url, fname):
+            return 'dl', url, base_name
+
+    return 'fail', None, base_name
+
+def download_items(items, out_dir, workers=max(1, (os.cpu_count() or 4) // 2)):
     total = len(items)
+    counters = {'dl': 0, 'sk': 0, 'fail': 0, 'missing': 0, 'done': 0}
     collected_urls = []
-    
+    lock = threading.Lock()
+
     WinProgress.start()
 
-    for i, item in enumerate(items, 1):
-        preview_links = [l for l in item.get('links', []) 
-                        if l.get('rel') == 'preview' and '/image/' in l.get('href', '')]
-        
-        if not preview_links:
-            nasa_id = item.get('data', [{}])[0].get('nasa_id', 'unknown')
-            print(f"\n  {Color.YELLOW}Skipped{Color.END} {nasa_id} (no image link)")
-            missing += 1
-            continue
+    def _on_complete(status, url, name):
+        counters[status] += 1
+        counters['done'] += 1
+        if url:
+            collected_urls.append(url)
 
-        href = preview_links[0]['href']
-        base_name = os.path.basename(href).replace('~thumb', '~orig').replace(' ', '_')
-        fname = os.path.join(out_dir, base_name)
+        if status == 'missing':
+            print(f"\n  {Color.YELLOW}Skipped{Color.END} {name} (no image link)")
 
-        pct = int((i / total) * 100)
+        pct = int((counters['done'] / total) * 100)
         WinProgress.set(pct)
-        processed = dl + fail + missing
-
+        non_sk = total - counters['sk']
+        processed = counters['dl'] + counters['fail'] + counters['missing']
         progress_text = (
-            f"{Color.YELLOW}[{pct}% {processed}/{total - sk}]{Color.END} "
-            f"Processing: {base_name[:35]}...\033[K"
+            f"{Color.YELLOW}[{pct}% {processed}/{non_sk}]{Color.END} "
+            f"Processing: {name[:35]}...\033[K"
         )
-
         sys.stdout.write("\r" + progress_text)
         sys.stdout.flush()
 
-        if os.path.exists(fname):
-            sk += 1
-            parsed = urllib.parse.urlparse(href.replace('~thumb', '~orig'))
-            collected_urls.append(ASSET_BASE + urllib.parse.quote(parsed.path))
-            continue
-
-        downloaded = False
-
-        for suffix in SIZE_ORDER:
-            parsed = urllib.parse.urlparse(href.replace('~thumb', suffix))
-            url = ASSET_BASE + urllib.parse.quote(parsed.path)
-            if _download_url(url, fname):
-                downloaded = True
-                dl += 1
-                collected_urls.append(url)
-                break
-
-        if not downloaded:
-            fail += 1
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(_process_item, item, out_dir): item for item in items}
+        for future in as_completed(futures):
+            status, url, name = future.result()
+            with lock:
+                _on_complete(status, url, name)
 
     sys.stdout.write('\r' + ' ' * 100 + '\r')
     WinProgress.done()
 
+    dl, sk, fail, missing = counters['dl'], counters['sk'], counters['fail'], counters['missing']
     print(f"  {Color.CYAN}Downloaded images:{Color.END} ({dl}/{total})")
 
     if collected_urls:
