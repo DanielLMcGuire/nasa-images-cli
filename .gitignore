@@ -2,3 +2,4 @@
 acast
 /dist
 /nasa_images_cli.egg-info
+/__pycache__

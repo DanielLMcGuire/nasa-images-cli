@@ -14,6 +14,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import socket
 import random
+import shutil
 
 API_ROOT = 'https://images-api.nasa.gov'
 ASSET_BASE = 'https://images-assets.nasa.gov'
@@ -27,6 +28,18 @@ NASA_WORM_LOGO = r""" ___     _      __     ______      __
  ‾     ‾‾‾ ‾‾        ‾‾‾‾‾‾‾‾ ‾‾        ‾‾"""
 MAX_RETRIES = 3
 RETRY_BASE  = 1.5 # seconds
+
+MEDIA_CHOICES = {
+    'all':   {'image', 'video'},
+    'image': {'image'},
+    'video': {'video'},
+}
+
+MEDIA_PARAM = {'all': 'image,video', 'image': 'image', 'video': 'video'}
+
+VIDEO_QUALITIES = ['orig', 'large', 'medium', 'small', 'mobile', 'preview']
+VIDEO_EXTS = ['.mp4', '.mov', '.m4v', '.webm', '.avi', '.mpg', '.mpeg', '.wmv']
+DEFAULT_VIDEO_QUALITY = 'large'
 
 class WinProgress:
     HIDDEN        = 0
@@ -151,7 +164,14 @@ def _similarity(query: str, title: str) -> float:
     prefix_bonus = 1.0 if t.startswith(q) else 0.0
     return (0.55 * token_score) + (0.35 * seq_score) + (0.10 * prefix_bonus)
 
-def get_json(url):
+def get_json(url, fatal=True):
+    def bail(*lines):
+        if fatal:
+            for line in lines:
+                print(line)
+            sys.exit(1)
+        return None
+
     try:
         req = urllib.request.Request(url, headers={'User-Agent': 'NASA-CLI-Archive-Tool/1.0'})
         with urllib.request.urlopen(req, timeout=15) as response:
@@ -161,36 +181,29 @@ def get_json(url):
         if e.code == 404:
             return None
         elif e.code == 429:
-            print(f"\n{Color.RED}Rate limit exceeded.{Color.END}")
-            sys.exit(1)
+            return bail(f"\n{Color.RED}Rate limit exceeded.{Color.END}")
         elif 500 <= e.code < 600:
-            print(f"\n{Color.RED}NASA Server Error ({e.code}).{Color.END}")
-            sys.exit(1)
+            return bail(f"\n{Color.RED}NASA Server Error ({e.code}).{Color.END}")
         else:
-            print(f"\n{Color.RED}HTTP Error {e.code}:{Color.END} {e.reason}")
-            sys.exit(1)
+            return bail(f"\n{Color.RED}HTTP Error {e.code}:{Color.END} {e.reason}")
 
     except urllib.error.URLError as e:
         if isinstance(e.reason, socket.timeout):
-            print(f"\n{Color.RED}Network Timeout.{Color.END}")
-        else:
-            print(f"\n{Color.RED}Connection Refused.{Color.END}")
-        sys.exit(1)
+            return bail(f"\n{Color.RED}Network Timeout.{Color.END}")
+        return bail(f"\n{Color.RED}Connection Refused.{Color.END}")
 
     except json.JSONDecodeError as e:
-        print(f"\n{Color.RED}Data Corruption.{Color.END} invalid JSON from API")
-        print(f"Details: {str(e)}")
-        sys.exit(1)
+        return bail(f"\n{Color.RED}Data Corruption.{Color.END} invalid JSON from API",
+                    f"Details: {str(e)}")
 
     except Exception as e:
-        print(f"\n{Color.RED}Unexpected Failure.{Color.END} Type: {type(e).__name__}")
-        print(f"Message: {str(e)}")
-        sys.exit(1)
+        return bail(f"\n{Color.RED}Unexpected Failure.{Color.END} Type: {type(e).__name__}",
+                    f"Message: {str(e)}")
 
-def _run_search(query: str, pages: int) -> dict:
+def _run_search(query: str, pages: int, media: str = 'image') -> dict:
     albums = {}
     for page in range(1, pages + 1):
-        params = urllib.parse.urlencode({'q': query, 'media_type': 'image', 'page_size': 100, 'page': page})
+        params = urllib.parse.urlencode({'q': query, 'media_type': media, 'page_size': 100, 'page': page})
         data = get_json(f'{API_ROOT}/search?{params}')
         if not data: break
         coll = data['collection']
@@ -209,6 +222,9 @@ def _run_search(query: str, pages: int) -> dict:
 
 def cmd_search(args):
     print(f"{Color.RED}{NASA_WORM_LOGO}{Color.END}")
+    media = getattr(args, 'media', 'all')
+    video_quality = getattr(args, 'video_quality', DEFAULT_VIDEO_QUALITY)
+    media_param = MEDIA_PARAM[media]
 
     def get_variants(q):
         variants = [q]
@@ -223,7 +239,7 @@ def cmd_search(args):
         for q in queries:
             if q in attempted: continue
             attempted.add(q)
-            res = _run_search(q, args.pages)
+            res = _run_search(q, args.pages, media_param)
             for album_name, titles in res.items():
                 merged_albums.setdefault(album_name, set()).update(titles)
 
@@ -258,7 +274,8 @@ def cmd_search(args):
     
     if choice.isdigit() and 1 <= int(choice) <= len(display_names):
         selected_album = display_names[int(choice)-1]
-        download_args = argparse.Namespace(album=selected_album, output=None)
+        download_args = argparse.Namespace(album=selected_album, output=None,
+                                           media=media, video_quality=video_quality)
         cmd_download(download_args)
 
 def _download_url(url: str, dest: str) -> bool:
@@ -281,13 +298,49 @@ def _download_url(url: str, dest: str) -> bool:
     if os.path.exists(tmp): os.remove(tmp)
     return False
 
-def _process_item(item, out_dir):
+def _item_field(item, key, default=None):
+    data = item.get('data') or [{}]
+    return data[0].get(key, default)
+
+def _asset_url(url: str) -> str:
+    path = urllib.parse.urlparse(url).path
+    return ASSET_BASE + urllib.parse.quote(urllib.parse.unquote(path))
+
+def _rank_video_urls(urls, quality: str = DEFAULT_VIDEO_QUALITY):
+    idx = VIDEO_QUALITIES.index(quality)
+    order = VIDEO_QUALITIES[idx:] + VIDEO_QUALITIES[:idx][::-1]
+
+    ranked = []
+    for url in urls:
+        path = urllib.parse.urlparse(url).path
+        stem, ext = os.path.splitext(path.lower())
+        if ext not in VIDEO_EXTS:
+            continue
+        tag = stem.rsplit('~', 1)[-1] if '~' in stem else None
+        q_rank = order.index(tag) if tag in order else len(order)
+        ranked.append((q_rank, VIDEO_EXTS.index(ext), url))
+    return [url for _, _, url in sorted(ranked)]
+
+def _video_asset_urls(item):
+    href = item.get('href')
+    data = get_json(_asset_url(href), fatal=False) if href else None
+
+    if data is None:
+        nasa_id = _item_field(item, 'nasa_id')
+        if nasa_id:
+            data = get_json(f'{API_ROOT}/asset/{urllib.parse.quote(nasa_id, safe="")}', fatal=False)
+
+    if isinstance(data, dict):
+        data = [i.get('href', '') for i in data.get('collection', {}).get('items', [])]
+    return [u for u in (data or []) if isinstance(u, str)]
+
+def _process_image(item, out_dir):
     preview_links = [l for l in item.get('links', [])
                      if l.get('rel') == 'preview' and '/image/' in l.get('href', '')]
 
     if not preview_links:
-        nasa_id = item.get('data', [{}])[0].get('nasa_id', 'unknown')
-        return 'missing', None, nasa_id
+        nasa_id = _item_field(item, 'nasa_id', 'unknown')
+        return 'missing', None, nasa_id, 'image'
 
     href = preview_links[0]['href']
     base_name = os.path.basename(href).replace('~thumb', '~orig').replace(' ', '_')
@@ -295,66 +348,114 @@ def _process_item(item, out_dir):
 
     if os.path.exists(fname):
         parsed = urllib.parse.urlparse(href.replace('~thumb', '~orig'))
-        return 'sk', ASSET_BASE + urllib.parse.quote(parsed.path), base_name
+        return 'sk', ASSET_BASE + urllib.parse.quote(parsed.path), base_name, 'image'
 
     for suffix in SIZE_ORDER:
         parsed = urllib.parse.urlparse(href.replace('~thumb', suffix))
         url = ASSET_BASE + urllib.parse.quote(parsed.path)
         if _download_url(url, fname):
-            return 'dl', url, base_name
+            return 'dl', url, base_name, 'image'
 
-    return 'fail', None, base_name
+    return 'fail', None, base_name, 'image'
 
-def download_items(items, out_dir, workers=max(1, (os.cpu_count() or 4) // 2)):
+def _process_video(item, out_dir, quality):
+    nasa_id = _item_field(item, 'nasa_id', 'unknown')
+    candidates = _rank_video_urls(_video_asset_urls(item), quality)
+
+    if not candidates:
+        return 'missing', None, nasa_id, 'video'
+
+    def local_name(u):
+        return urllib.parse.unquote(os.path.basename(urllib.parse.urlparse(u).path)).replace(' ', '_')
+
+    best = candidates[0]
+    if os.path.exists(os.path.join(out_dir, local_name(best))):
+        return 'sk', _asset_url(best), local_name(best), 'video'
+
+    for cand in candidates:
+        url, name = _asset_url(cand), local_name(cand)
+        if _download_url(url, os.path.join(out_dir, name)):
+            return 'dl', url, name, 'video'
+
+    return 'fail', None, local_name(best), 'video'
+
+def _process_item(item, out_dir, video_quality=DEFAULT_VIDEO_QUALITY):
+    if _item_field(item, 'media_type', 'image') == 'video':
+        return _process_video(item, out_dir, video_quality)
+    return _process_image(item, out_dir)
+
+def download_items(items, out_dir, video_quality=DEFAULT_VIDEO_QUALITY,
+                   workers=max(1, (os.cpu_count() or 4) // 2)):
     total = len(items)
     counters = {'dl': 0, 'sk': 0, 'fail': 0, 'missing': 0, 'done': 0}
-    collected_urls = []
+    downloaded = {'image': 0, 'video': 0}
+    collected_urls = {'image': [], 'video': []}
     lock = threading.Lock()
 
     WinProgress.start()
 
-    def _on_complete(status, url, name):
+    def _on_complete(status, url, name, kind):
         counters[status] += 1
         counters['done'] += 1
+        if status == 'dl':
+            downloaded[kind] += 1
         if url:
-            collected_urls.append(url)
+            collected_urls[kind].append(url)
 
         if status == 'missing':
-            print(f"\n  {Color.YELLOW}Skipped{Color.END} {name} (no image link)")
+            print(f"\n  {Color.YELLOW}Skipped{Color.END} {name} (no {kind} file found)")
 
         pct = int((counters['done'] / total) * 100)
         WinProgress.set(pct)
         non_sk = total - counters['sk']
         processed = counters['dl'] + counters['fail'] + counters['missing']
+
+        term_width = shutil.get_terminal_size((80, 20)).columns
+        visible_prefix = f"[{pct}% {processed}/{non_sk}] Processing: "
+        avail_space = term_width - len(visible_prefix) - 1
+        
+        if len(name) > avail_space:
+            if avail_space > 3:
+                display_name = name[:avail_space - 3] + "..."
+            else:
+                display_name = "." * max(0, avail_space)
+        else:
+            display_name = name
+
         progress_text = (
             f"{Color.YELLOW}[{pct}% {processed}/{non_sk}]{Color.END} "
-            f"Processing: {name[:35]}...\033[K"
+            f"Processing: {display_name}\033[K"
         )
         sys.stdout.write("\r" + progress_text)
         sys.stdout.flush()
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(_process_item, item, out_dir): item for item in items}
+        futures = {pool.submit(_process_item, item, out_dir, video_quality): item for item in items}
         for future in as_completed(futures):
-            status, url, name = future.result()
+            status, url, name, kind = future.result()
             with lock:
-                _on_complete(status, url, name)
+                _on_complete(status, url, name, kind)
 
-    sys.stdout.write('\r' + ' ' * 100 + '\r')
+    sys.stdout.write('\r' + ' ' * (shutil.get_terminal_size((80, 20)).columns - 1) + '\r')
     WinProgress.done()
 
     dl, sk, fail, missing = counters['dl'], counters['sk'], counters['fail'], counters['missing']
-    print(f"  {Color.CYAN}Downloaded images:{Color.END} ({dl}/{total})")
+    print(f"  {Color.CYAN}Downloaded:{Color.END} {downloaded['image']} image(s), "
+          f"{downloaded['video']} video(s) ({dl}/{total})")
 
-    if collected_urls:
-        urls_file = os.path.join(out_dir, 'images.txt')
-        with open(urls_file, 'w', encoding='utf-8') as f:
-            f.write('\n'.join(collected_urls) + '\n')
-        print(f"  {Color.CYAN}URLs saved to:{Color.END} {urls_file}")
+    for kind, filename in (('image', 'images.txt'), ('video', 'videos.txt')):
+        if collected_urls[kind]:
+            urls_file = os.path.join(out_dir, filename)
+            with open(urls_file, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(collected_urls[kind]) + '\n')
+            print(f"  {Color.CYAN}{kind.capitalize()} URLs saved to:{Color.END} {urls_file}")
 
     return dl, sk, fail, missing
 
 def cmd_download(args):
+    media = getattr(args, 'media', 'all')
+    video_quality = getattr(args, 'video_quality', DEFAULT_VIDEO_QUALITY)
+
     out_dir = args.output or args.album.replace(' ', '_')
     os.makedirs(out_dir, exist_ok=True)
     
@@ -382,26 +483,47 @@ def cmd_download(args):
             page += 1
             current_coll = get_json(f'{base_url}?page_size=100&page={page}')['collection']
 
-    print(f"  {Color.CYAN}Total items:{Color.END} {len(all_items)}")
+    wanted = MEDIA_CHOICES[media]
+    items = [i for i in all_items if _item_field(i, 'media_type', 'image') in wanted]
+    n_video = sum(1 for i in items if _item_field(i, 'media_type', 'image') == 'video')
+    n_other = len(all_items) - len(items)
 
-    dl, sk, fail, missing = download_items(all_items, out_dir)
+    print(f"  {Color.CYAN}Total items:{Color.END} {len(items)} "
+          f"({len(items) - n_video} images, {n_video} videos)")
+    if n_other:
+        print(f"  {Color.YELLOW}Ignoring{Color.END} {n_other} item(s) not matching --media {media}")
+
+    if not items:
+        print(f"{Color.RED}Nothing to download.{Color.END}")
+        return
+
+    dl, sk, fail, missing = download_items(items, out_dir, video_quality)
 
     print(f"\n{Color.BOLD}Summary:{Color.END}")
     print(f"  {Color.GREEN}New:{Color.END} {dl} | {Color.CYAN}Existing:{Color.END} {sk} | {Color.RED}Failed:{Color.END} {fail} | {Color.YELLOW}Missing:{Color.END} {missing}\n")
 
+def _add_media_args(p):
+    p.add_argument('-m', '--media', choices=list(MEDIA_CHOICES), default='all',
+                   help='What to fetch: images, videos, or all (default: all)')
+    p.add_argument('-q', '--video-quality', choices=VIDEO_QUALITIES, default=DEFAULT_VIDEO_QUALITY,
+                   help=f'Preferred video quality, will fall back to nearest available '
+                        f'(default: {DEFAULT_VIDEO_QUALITY})')
+
 def main():
-    parser = argparse.ArgumentParser(description='bulk-download images from NASA Image Library')
+    parser = argparse.ArgumentParser(description='bulk-download images and videos from NASA Image Library')
     sub = parser.add_subparsers(dest='command', required=True)
 
     p = sub.add_parser('search')
     p.add_argument('query')
     p.add_argument('-l', '--limit', type=int, default=10, help='Max albums to show (default: 10)')
     p.add_argument('--pages', type=int, default=5, help='Search depth (default: 5)')
+    _add_media_args(p)
     p.set_defaults(func=cmd_search)
 
     p = sub.add_parser('download')
     p.add_argument('album')
     p.add_argument('-o', '--output', default=None)
+    _add_media_args(p)
     p.set_defaults(func=cmd_download)
 
     args = parser.parse_args()
